@@ -111,10 +111,6 @@ const LoginScreen = () => {
     navigation.navigate('ResetPassword' as never);
   };
 
-  const openConfigInstallationURL = () => {
-    navigation.navigate('ConfigureURL' as never);
-  };
-
   const onChangeLanguage = (locale: string) => {
     dispatch(setLocale(locale));
   };
@@ -150,8 +146,8 @@ const LoginScreen = () => {
           contentContainerStyle={tailwind.style('px-6 pt-24')}>
           <Image
             // eslint-disable-next-line @typescript-eslint/no-var-requires, @typescript-eslint/no-require-imports
-            source={require('@/assets/images/logo.png')}
-            style={tailwind.style('w-10 h-10')}
+            source={require('../../../assets/icon.png')}
+            style={tailwind.style('w-32 h-32 self-center')}
             resizeMode="contain"
           />
           <View style={tailwind.style('pt-6 gap-4')}>
@@ -282,13 +278,6 @@ const LoginScreen = () => {
             handlePress={handleSubmit(onSubmit)}
           />
 
-          <Pressable
-            style={tailwind.style('flex-row justify-center items-center mt-6')}
-            onPress={openConfigInstallationURL}>
-            <Animated.Text style={tailwind.style('text-sm text-gray-900')}>
-              {i18n.t('LOGIN.CHANGE_URL')}
-            </Animated.Text>
-          </Pressable>
           <Pressable
             style={tailwind.style('flex-row justify-center items-center mt-4')}
             onPress={() => languagesModalSheetRef.current?.present()}>
