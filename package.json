@@ -194,6 +194,13 @@
       "@typescript-eslint/typescript-estree>minimatch": "9.0.7",
       "glob>minimatch": "9.0.7",
       "tar": "6.2.1"
-    }
+    },
+    "onlyBuiltDependencies": [
+      "@sentry/cli",
+      "esbuild",
+      "hyochan-welcome",
+      "protobufjs",
+      "unrs-resolver"
+    ]
   }
 }
