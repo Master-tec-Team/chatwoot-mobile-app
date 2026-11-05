@@ -1,4 +1,5 @@
-import React, { useCallback, useEffect } from 'react';
+import React, { useCallback, useEffect, useRef } from 'react';
+import { Platform } from 'react-native';
 import { BottomTabBarProps, createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 
@@ -39,6 +40,9 @@ import { clearAllDeliveredNotifications } from '@/utils/pushUtils';
 import { dashboardAppActions } from '@/store/dashboard-app/dashboardAppActions';
 import { customAttributeActions } from '@/store/custom-attribute/customAttributeActions';
 import { clearSelection } from '@/store/conversation/conversationSelectedSlice';
+import { InAppCallScreen } from '@/screens/call';
+import { runCallReadiness } from '@/screens/call/utils/callReadiness';
+import { RESULTS, checkNotifications, requestNotifications } from 'react-native-permissions';
 
 const Tab = createBottomTabNavigator();
 
@@ -89,8 +93,8 @@ const Tabs = () => {
   useEffect(() => {
     // Here is the place we are loading all the data for the app first time first time or user switches account
     dispatch(authActions.getProfile());
-    dispatch(settingsActions.saveDeviceDetails());
-    dispatch(inboxActions.fetchInboxes());
+    const inboxesLoaded = dispatch(inboxActions.fetchInboxes());
+    askForPermissions(inboxesLoaded);
     initActionCable();
     dispatch(labelActions.fetchLabels());
     dispatch(setCurrentState('none'));
@@ -100,6 +104,19 @@ const Tabs = () => {
     initAnalytics();
     initSentry();
     initPushNotifications();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const askForPermissions = useCallback(async (inboxesLoaded: Promise<unknown>) => {
+    try {
+      const { status } = await checkNotifications();
+      if (status !== RESULTS.GRANTED) await requestNotifications(['alert', 'sound', 'badge']);
+      await inboxesLoaded;
+      await runCallReadiness();
+    } catch {
+      // Prompt failures must not prevent registration.
+    }
+    dispatch(settingsActions.saveDeviceDetails());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -131,6 +148,22 @@ const Tabs = () => {
       actionCableConnector.init({ pubSubToken, webSocketUrl, accountId, userId });
     }
   }, [accountId, pubSubToken, userId, webSocketUrl]);
+
+  // Re-run the account-scoped bootstrap when the active account changes, e.g. after a
+  // cross-account push switch while the tabs stay mounted (mount is handled above).
+  const isInitialAccountMount = useRef(true);
+  useEffect(() => {
+    if (isInitialAccountMount.current) {
+      isInitialAccountMount.current = false;
+      return;
+    }
+    dispatch(inboxActions.fetchInboxes());
+    dispatch(labelActions.fetchLabels());
+    dispatch(dashboardAppActions.index());
+    dispatch(customAttributeActions.index());
+    initActionCable();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accountId]);
 
   useEffect(() => {
     dispatch(settingsActions.getChatwootVersion({ installationUrl: installationUrl }));
@@ -180,35 +213,38 @@ export const AppTabs = () => {
 
   if (isLoggedIn) {
     return (
-      <Stack.Navigator screenOptions={{ headerShown: false }}>
-        <Stack.Screen name="Tab" component={Tabs} />
-        <Stack.Screen
-          options={{ animation: 'slide_from_right' }}
-          name="ChatScreen"
-          component={ChatScreen}
-        />
-        <Stack.Screen
-          options={{
-            presentation: 'formSheet',
-            animation: 'slide_from_bottom',
-          }}
-          name="ContactDetails"
-          component={ContactDetailsScreen}
-        />
-        <Stack.Screen
-          options={{
-            presentation: 'formSheet',
-            animation: 'slide_from_bottom',
-          }}
-          name="Dashboard"
-          component={DashboardScreen}
-        />
-        <Stack.Screen
-          options={{ headerShown: false, animation: 'slide_from_right' }}
-          name="SearchScreen"
-          component={SearchScreen}
-        />
-      </Stack.Navigator>
+      <React.Fragment>
+        <Stack.Navigator screenOptions={{ headerShown: false }}>
+          <Stack.Screen name="Tab" component={Tabs} />
+          <Stack.Screen
+            options={{ animation: 'slide_from_right' }}
+            name="ChatScreen"
+            component={ChatScreen}
+          />
+          <Stack.Screen
+            options={{
+              presentation: Platform.OS === 'ios' ? 'formSheet' : 'modal',
+              animation: 'slide_from_bottom',
+            }}
+            name="ContactDetails"
+            component={ContactDetailsScreen}
+          />
+          <Stack.Screen
+            options={{
+              presentation: Platform.OS === 'ios' ? 'formSheet' : 'modal',
+              animation: 'slide_from_bottom',
+            }}
+            name="Dashboard"
+            component={DashboardScreen}
+          />
+          <Stack.Screen
+            options={{ headerShown: false, animation: 'slide_from_right' }}
+            name="SearchScreen"
+            component={SearchScreen}
+          />
+        </Stack.Navigator>
+        <InAppCallScreen />
+      </React.Fragment>
     );
   } else {
     return <AuthStack />;

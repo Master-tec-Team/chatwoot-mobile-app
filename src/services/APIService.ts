@@ -4,6 +4,9 @@ import axios, {
   AxiosError,
   InternalAxiosRequestConfig,
 } from 'axios';
+import Constants from 'expo-constants';
+import * as Device from 'expo-device';
+import { Platform } from 'react-native';
 
 import { getStore } from '@/store/storeAccessor';
 import I18n from '@/i18n';
@@ -14,13 +17,50 @@ const nonAccountRoutes = [
   'profile/availability',
   'notification_subscriptions',
   'profile/set_active_account',
+  'profile/work_preferences',
 ];
+
+// True when a request was made for an account other than the one now active (e.g. it was
+// in flight when the user switched accounts), so its response/error should be ignored.
+const isForPreviousAccount = (url?: string): boolean => {
+  const requestedAccountId = url?.match(/accounts\/(\d+)\//)?.[1];
+  const activeAccountId = getStore().getState().auth.user?.account_id;
+  return Boolean(
+    requestedAccountId && activeAccountId && Number(requestedAccountId) !== Number(activeAccountId),
+  );
+};
+
+const CLIENT_NAME = 'Chatwoot Mobile';
+const CLIENT_VERSION = Constants.expoConfig?.version ?? 'unknown';
+
+function deviceHeaders(): Record<string, string> {
+  const platform = Platform.OS;
+  const osVersion = String(Device.osVersion ?? Platform.Version);
+  const model = Device.modelName ?? 'Unknown';
+  return {
+    'X-Chatwoot-Client-Name': CLIENT_NAME,
+    'X-Chatwoot-Client-Version': CLIENT_VERSION,
+    'X-Chatwoot-Platform': platform,
+    'X-Chatwoot-Platform-Version': osVersion,
+    'X-Chatwoot-Device-Model': model,
+    'User-Agent': `${CLIENT_NAME}/${CLIENT_VERSION} (${platform} ${osVersion}; ${model})`,
+  };
+}
+
+export type AccountScopedRequestConfig = AxiosRequestConfig & {
+  accountId?: number;
+  quietStatuses?: number[];
+};
+
+const namesItsAccount = (config?: AxiosRequestConfig) =>
+  !!(config as AccountScopedRequestConfig | undefined)?.accountId;
 
 class APIService {
   private static instance: APIService;
   private api = axios.create();
 
   private constructor() {
+    Object.assign(this.api.defaults.headers.common, deviceHeaders());
     this.setupInterceptors();
   }
 
@@ -51,7 +91,8 @@ class APIService {
         const store = getStore();
         const state = store.getState();
         config.baseURL = state.settings?.installationUrl;
-        const accountId = state.auth.user?.account_id;
+        const accountId =
+          (config as AccountScopedRequestConfig).accountId ?? state.auth.user?.account_id;
         if (accountId && config.url && !nonAccountRoutes.includes(config.url)) {
           config.url = `api/v1/accounts/${accountId}/${config.url}`;
         } else if (nonAccountRoutes.includes(config.url || '')) {
@@ -69,16 +110,32 @@ class APIService {
     );
 
     this.api.interceptors.response.use(
-      (response: AxiosResponse) => response,
+      (response: AxiosResponse) => {
+        // Drop responses for a previous account so stale data can't repopulate the UI.
+        if (!namesItsAccount(response.config) && isForPreviousAccount(response.config.url)) {
+          return Promise.reject(
+            new axios.CanceledError('Ignoring response for a previous account'),
+          );
+        }
+        return response;
+      },
       async (error: AxiosError) => {
         if (axios.isCancel(error)) {
           return Promise.reject(error);
+        }
+        // Ignore errors for a previous account before global handling (avoids a stale 401
+        // logging out or a stale error toast for the account just switched away from).
+        if (!namesItsAccount(error.config) && isForPreviousAccount(error.config?.url)) {
+          return Promise.reject(new axios.CanceledError('Ignoring error for a previous account'));
         }
         if (error.response?.status === 401) {
           const store = getStore();
           store.dispatch({ type: 'auth/logout' });
         } else {
-          showToast({ message: I18n.t('ERRORS.COMMON_ERROR') });
+          const quiet = (error.config as AccountScopedRequestConfig | undefined)?.quietStatuses;
+          if (!quiet?.includes(error.response?.status ?? -1)) {
+            showToast({ message: I18n.t('ERRORS.COMMON_ERROR') });
+          }
         }
         return Promise.reject(error);
       },

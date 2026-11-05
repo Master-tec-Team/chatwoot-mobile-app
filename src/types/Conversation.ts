@@ -11,6 +11,7 @@ export interface Conversation {
   agentLastSeenAt: UnixTimestamp;
   assigneeLastSeenAt: UnixTimestamp;
   canReply: boolean;
+  anonymousCaller?: boolean;
   contactLastSeenAt: UnixTimestamp;
   createdAt: UnixTimestamp;
   customAttributes: Record<string, string>;
@@ -37,6 +38,9 @@ export interface Conversation {
 
   // Deprecated
   timestamp: UnixTimestamp;
+  updatedAt?: UnixTimestamp;
+  localStatusUpdatedAt?: UnixTimestamp;
+  localStatusPreviousStatus?: ConversationStatus;
 
   slaPolicyId: number | null;
 

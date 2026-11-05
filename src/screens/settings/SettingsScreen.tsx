@@ -1,36 +1,26 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { StatusBar, Text, Platform, Pressable } from 'react-native';
+import { StatusBar, Text, Platform, Pressable, ScrollView } from 'react-native';
 import Animated from 'react-native-reanimated';
 // import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StackActions, useNavigation } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-import {
-  BottomSheetModal,
-  BottomSheetScrollView,
-  useBottomSheetSpringConfigs,
-} from '@gorhom/bottom-sheet';
 import DeviceInfo from 'react-native-device-info';
-import * as WebBrowser from 'expo-web-browser';
 import ChatWootWidget from '@chatwoot/react-native-widget';
 import { useSelector } from 'react-redux';
 import * as Application from 'expo-application';
 import { Account, AvailabilityStatus } from '@/types';
-import { clearAllConversations } from '@/store/conversation/conversationSlice';
-import { resetNotifications } from '@/store/notification/notificationSlice';
-import { clearAllContacts } from '@/store/contact/contactSlice';
-import { clearSearchResults } from '@/store/search/searchSlice';
+import { switchAccount } from '@/utils/accountUtils';
 
 import { RecentSearches } from '@/screens/search/utils/recentSearches';
 import i18n from 'i18n';
 import { HELP_URL } from '@/constants/url';
+import { openURL } from '@/utils/urlUtils';
 import { tailwind } from '@/theme';
 
 import {
-  BottomSheetBackdrop,
   BottomSheetHeader,
-  BottomSheetWrapper,
   Button,
   LanguageList,
   AvailabilityStatusList,
@@ -38,22 +28,33 @@ import {
   SwitchAccount,
   SettingsList,
 } from '@/components-next';
+import { Sheet } from '@/components-next/common/sheet/Sheet';
 import { UserAvatar } from './components/UserAvatar';
 
-import { LANGUAGES, TAB_BAR_HEIGHT } from '@/constants';
+import { LANGUAGES } from '@/constants';
 import { useRefsContext } from '@/context';
-import { ChatwootIcon, NotificationIcon, SwitchIcon, TranslateIcon } from '@/svg-icons';
+import {
+  ChatIcon,
+  ChatwootIcon,
+  NotificationIcon,
+  PhoneOutlineIcon,
+  SwitchIcon,
+  TranslateIcon,
+} from '@/svg-icons';
 import { GenericListType } from '@/types';
 
-import { useHaptic } from '@/utils';
+import { useHaptic, useTabBarHeight } from '@/utils';
 import { SettingsHeader } from './SettingsHeader';
 import { DebugActions } from './components/DebugActions';
+import { WorkPausedNote } from './components/WorkPausedNote';
+import { useWorkPreferences } from './hooks/useWorkPreferences';
 import {
   selectCurrentUserAvailability,
+  selectSupportsWorkPreferences,
   selectUser,
   selectAccounts,
 } from '@/store/auth/authSelectors';
-import { logout, setAccount } from '@/store/auth/authSlice';
+import { logout } from '@/store/auth/authSlice';
 import { authActions } from '@/store/auth/authActions';
 import {
   selectLocale,
@@ -67,7 +68,11 @@ import AnalyticsHelper from '@/utils/analyticsUtils';
 import { PROFILE_EVENTS } from '@/constants/analyticsEvents';
 import { getUserPermissions } from '@/utils/permissionUtils';
 import { CONVERSATION_PERMISSIONS } from '@/constants/permissions';
+import { selectAllInboxes } from '@/store/inbox/inboxSelectors';
+import { isVoiceCallEnabled } from '@/utils/inboxUtils';
 import { useAppDispatch, useAppSelector } from '@/hooks';
+import { getVoipToken } from '@/services/voice/chatwootCalls';
+import { callActions } from '@/store/call/callActions';
 
 const appName = Application.applicationName;
 const appVersion = Application.nativeApplicationVersion;
@@ -78,6 +83,7 @@ const appVersionDetails = buildNumber ? `${appVersion} (${buildNumber})` : appVe
 const SettingsScreen = () => {
   const navigation = useNavigation();
   const dispatch = useAppDispatch();
+  const tabBarHeight = useTabBarHeight();
   const availabilityStatus =
     (useSelector(selectCurrentUserAvailability) as AvailabilityStatus) || 'offline';
 
@@ -93,9 +99,10 @@ const SettingsScreen = () => {
     account_id: activeAccountId,
   } = user || {};
 
+  // Refetch when the active account changes; notification settings are account-scoped.
   useEffect(() => {
     dispatch(settingsActions.getNotificationSettings());
-  }, [dispatch]);
+  }, [dispatch, activeAccountId]);
 
   const pushToken = useAppSelector(selectPushToken);
 
@@ -123,6 +130,15 @@ const SettingsScreen = () => {
   };
 
   const isChatwootCloud = useAppSelector(selectIsChatwootCloud);
+  const hasVoiceInbox = useAppSelector(state => selectAllInboxes(state).some(isVoiceCallEnabled));
+  const supportsWorkPreferences = useAppSelector(selectSupportsWorkPreferences);
+  const showWorkPreferences = hasVoiceInbox && supportsWorkPreferences;
+  const isOnline = availabilityStatus === 'online';
+  const {
+    preferences: workPreferences,
+    isLocked: isWorkPreferenceLocked,
+    toggle: toggleWorkPreference,
+  } = useWorkPreferences();
 
   const chatwootInstance = isChatwootCloud ? `${appName} cloud` : `${appName} self-hosted`;
 
@@ -145,12 +161,6 @@ const SettingsScreen = () => {
 
   const hapticSelection = useHaptic();
 
-  const animationConfigs = useBottomSheetSpringConfigs({
-    mass: 1,
-    stiffness: 420,
-    damping: 30,
-  });
-
   const openSheet = () => {
     hapticSelection?.();
     userAvailabilityStatusSheetRef.current?.present();
@@ -172,31 +182,22 @@ const SettingsScreen = () => {
   };
 
   const changeAccount = (accountId: number) => {
-    dispatch(clearAllContacts());
-    dispatch(clearAllConversations());
-    dispatch(resetNotifications());
-    dispatch(clearSearchResults());
-    dispatch(setAccount(accountId));
-    dispatch(authActions.setActiveAccount({ profile: { account_id: accountId } }));
+    if (!switchAccount(dispatch, accountId)) return;
     navigation.dispatch(StackActions.replace('Tab'));
   };
 
   useEffect(() => {
-    userAvailabilityStatusSheetRef.current?.dismiss({
-      overshootClamping: true,
-    });
+    userAvailabilityStatusSheetRef.current?.dismiss();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [availabilityStatus]);
 
   useEffect(() => {
-    languagesModalSheetRef.current?.dismiss({
-      overshootClamping: true,
-    });
+    languagesModalSheetRef.current?.dismiss();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeLocale]);
 
-  const openURL = async () => {
-    await WebBrowser.openBrowserAsync(HELP_URL);
+  const openHelpCenter = () => {
+    openURL({ URL: HELP_URL });
   };
 
   // const openSystemSettings = () => {
@@ -208,21 +209,46 @@ const SettingsScreen = () => {
   // };
 
   const onClickLogout = useCallback(async () => {
+    // Server hangup requires the current session.
+    await dispatch(callActions.endLocalCalls()).catch(() => {});
     await AsyncStorage.removeItem('cwCookie');
     await RecentSearches.clearAll();
     await dispatch(settingsActions.removeDevice({ pushToken }));
+    const voipToken = getVoipToken();
+    if (voipToken) await dispatch(settingsActions.removeDevice({ pushToken: voipToken }));
     dispatch(logout());
   }, [dispatch, pushToken]);
 
-  const preferencesList: GenericListType[] = [
+  const availabilityList: GenericListType[] = [
     {
       hasChevron: true,
-      title: i18n.t('SETTINGS.CHANGE_AVAILABILITY'),
+      title: i18n.t('SETTINGS.STATUS'),
       icon: <SwitchIcon />,
-      subtitle: '',
+      subtitle: i18n.t(`AVAILABILITY.${availabilityStatus.toUpperCase()}`),
       subtitleType: 'light',
       onPressListItem: () => openSheet(),
     },
+    {
+      title: i18n.t('SETTINGS.RECEIVE_CONVERSATIONS'),
+      icon: <ChatIcon />,
+      checked: workPreferences.accepts_conversations,
+      disabled: !showWorkPreferences,
+      inactive: !isOnline,
+      locked: isWorkPreferenceLocked('accepts_conversations'),
+      onPressListItem: () => toggleWorkPreference('accepts_conversations'),
+    },
+    {
+      title: i18n.t('SETTINGS.RECEIVE_VOICE_CALLS'),
+      icon: <PhoneOutlineIcon stroke="#858585" />,
+      checked: workPreferences.accepts_calls,
+      disabled: !showWorkPreferences,
+      inactive: !isOnline,
+      locked: isWorkPreferenceLocked('accepts_calls'),
+      onPressListItem: () => toggleWorkPreference('accepts_calls'),
+    },
+  ];
+
+  const preferencesList: GenericListType[] = [
     {
       hasChevron: true,
       title: i18n.t('SETTINGS.NOTIFICATIONS'),
@@ -262,7 +288,7 @@ const SettingsScreen = () => {
       icon: <SwitchIcon />,
       subtitle: '',
       subtitleType: 'light',
-      onPressListItem: openURL,
+      onPressListItem: openHelpCenter,
     },
     {
       hasChevron: true,
@@ -284,7 +310,7 @@ const SettingsScreen = () => {
       <SettingsHeader />
       <Animated.ScrollView
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={tailwind.style(`pb-[${TAB_BAR_HEIGHT - 1}px]`)}>
+        contentContainerStyle={tailwind.style(`pb-[${tabBarHeight - 1}px]`)}>
         <Animated.View style={tailwind.style('flex justify-center items-center pt-4 gap-4')}>
           <Animated.View>
             <UserAvatar src={avatarUrl} name={name} status={availabilityStatus} />
@@ -304,6 +330,10 @@ const SettingsScreen = () => {
               {email}
             </Animated.Text>
           </Animated.View>
+        </Animated.View>
+        <Animated.View style={tailwind.style('pt-6')}>
+          <SettingsList sectionTitle={i18n.t('SETTINGS.AVAILABILITY')} list={availabilityList} />
+          {showWorkPreferences && !isOnline && <WorkPausedNote />}
         </Animated.View>
         <Animated.View style={tailwind.style('pt-6')}>
           <SettingsList sectionTitle={i18n.t('SETTINGS.PREFERENCES')} list={preferencesList} />
@@ -327,91 +357,35 @@ const SettingsScreen = () => {
           </Text>
         </Pressable>
       </Animated.ScrollView>
-      <BottomSheetModal
-        ref={userAvailabilityStatusSheetRef}
-        backdropComponent={BottomSheetBackdrop}
-        handleIndicatorStyle={tailwind.style('overflow-hidden bg-blackA-A6 w-8 h-1 rounded-[11px]')}
-        enablePanDownToClose
-        animationConfigs={animationConfigs}
-        // TODO: Fix this later
-        // bottomInset={bottom === 0 ? 12 : bottom}
-        handleStyle={tailwind.style('p-0 h-4 pt-[5px]')}
-        style={tailwind.style('rounded-[26px] overflow-hidden')}
-        snapPoints={[190]}>
-        <BottomSheetWrapper>
-          <BottomSheetHeader headerText={i18n.t('SETTINGS.SET_AVAILABILITY')} />
-          <AvailabilityStatusList
-            changeAvailabilityStatus={changeAvailabilityStatus}
-            availabilityStatus={availabilityStatus}
-          />
-        </BottomSheetWrapper>
-      </BottomSheetModal>
-      <BottomSheetModal
-        ref={languagesModalSheetRef}
-        backdropComponent={BottomSheetBackdrop}
-        handleIndicatorStyle={tailwind.style('overflow-hidden bg-blackA-A6 w-8 h-1 rounded-[11px]')}
-        // TODO: Fix this later
-        // bottomInset={bottom === 0 ? 12 : bottom}
-        enablePanDownToClose
-        animationConfigs={animationConfigs}
-        handleStyle={tailwind.style('p-0 h-4 pt-[5px]')}
-        style={tailwind.style('rounded-[26px] overflow-hidden')}
-        snapPoints={['70%']}>
-        <BottomSheetScrollView showsVerticalScrollIndicator={false}>
+      <Sheet ref={userAvailabilityStatusSheetRef} height={190}>
+        <BottomSheetHeader headerText={i18n.t('SETTINGS.SET_AVAILABILITY')} />
+        <AvailabilityStatusList
+          changeAvailabilityStatus={changeAvailabilityStatus}
+          availabilityStatus={availabilityStatus}
+        />
+      </Sheet>
+      <Sheet ref={languagesModalSheetRef} detents={[0.7]} scrollable>
+        <ScrollView showsVerticalScrollIndicator={false}>
           <BottomSheetHeader headerText={i18n.t('SETTINGS.SET_LANGUAGE')} />
           <LanguageList onChangeLanguage={onChangeLanguage} currentLanguage={activeLocale} />
-        </BottomSheetScrollView>
-      </BottomSheetModal>
-      <BottomSheetModal
-        ref={notificationPreferencesSheetRef}
-        backdropComponent={BottomSheetBackdrop}
-        handleIndicatorStyle={tailwind.style('overflow-hidden bg-blackA-A6 w-8 h-1 rounded-[11px]')}
-        // TODO: Fix this later
-        // bottomInset={bottom === 0 ? 12 : bottom}
-        enablePanDownToClose
-        animationConfigs={animationConfigs}
-        handleStyle={tailwind.style('p-0 h-4 pt-[5px]')}
-        style={tailwind.style('rounded-[26px] overflow-hidden')}
-        snapPoints={['52%']}>
-        <BottomSheetWrapper>
-          <BottomSheetHeader headerText={i18n.t('SETTINGS.NOTIFICATION_PREFERENCES')} />
-          <NotificationPreferences />
-        </BottomSheetWrapper>
-      </BottomSheetModal>
-      <BottomSheetModal
-        ref={switchAccountSheetRef}
-        backdropComponent={BottomSheetBackdrop}
-        handleIndicatorStyle={tailwind.style('overflow-hidden bg-blackA-A6 w-8 h-1 rounded-[11px]')}
-        // TODO: Fix this later
-        // bottomInset={bottom === 0 ? 12 : bottom}
-        enablePanDownToClose
-        animationConfigs={animationConfigs}
-        handleStyle={tailwind.style('p-0 h-4 pt-[5px]')}
-        style={tailwind.style('rounded-[26px] overflow-hidden')}
-        snapPoints={['50%']}>
-        <BottomSheetWrapper>
-          <BottomSheetHeader headerText={i18n.t('SETTINGS.SWITCH_ACCOUNT')} />
-          <SwitchAccount
-            currentAccountId={activeAccountId}
-            changeAccount={changeAccount}
-            accounts={accounts}
-          />
-        </BottomSheetWrapper>
-      </BottomSheetModal>
-      <BottomSheetModal
-        ref={debugActionsSheetRef}
-        backdropComponent={BottomSheetBackdrop}
-        handleIndicatorStyle={tailwind.style('overflow-hidden bg-blackA-A6 w-8 h-1 rounded-[11px]')}
-        enablePanDownToClose
-        animationConfigs={animationConfigs}
-        handleStyle={tailwind.style('p-0 h-4 pt-[5px]')}
-        style={tailwind.style('rounded-[26px] overflow-hidden')}
-        snapPoints={['36%']}>
-        <BottomSheetWrapper>
-          <BottomSheetHeader headerText={i18n.t('SETTINGS.DEBUG_ACTIONS')} />
-          <DebugActions />
-        </BottomSheetWrapper>
-      </BottomSheetModal>
+        </ScrollView>
+      </Sheet>
+      <Sheet ref={notificationPreferencesSheetRef} detents={[0.52]}>
+        <BottomSheetHeader headerText={i18n.t('SETTINGS.NOTIFICATION_PREFERENCES')} />
+        <NotificationPreferences />
+      </Sheet>
+      <Sheet ref={switchAccountSheetRef} detents={[0.5]}>
+        <BottomSheetHeader headerText={i18n.t('SETTINGS.SWITCH_ACCOUNT')} />
+        <SwitchAccount
+          currentAccountId={activeAccountId}
+          changeAccount={changeAccount}
+          accounts={accounts}
+        />
+      </Sheet>
+      <Sheet ref={debugActionsSheetRef} detents={[0.36]}>
+        <BottomSheetHeader headerText={i18n.t('SETTINGS.DEBUG_ACTIONS')} />
+        <DebugActions />
+      </Sheet>
       {!!process.env.EXPO_PUBLIC_CHATWOOT_WEBSITE_TOKEN &&
         !!process.env.EXPO_PUBLIC_CHATWOOT_BASE_URL &&
         !!showWidget && (
